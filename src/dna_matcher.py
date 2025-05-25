@@ -17,65 +17,70 @@ def reverse_complement(seq: str) -> str:
     complement = str.maketrans('ATCGatcg', 'TAGCtagc')
     return seq.translate(complement)[::-1]
 
-# minimizer稀疏化提取
-def minimize(seq: str, k: int, w: int) -> List[Tuple[str, int]]:
+# 先长后短kmer锚点提取
+def build_anchors(query: str, ref: str) -> List[Anchor]:
     """
-    提取minimizer稀疏化的kmer及其在seq中的起始位置。
-    每个窗口w内只保留字典序最小的kmer。
+    先长后短kmer锚点提取，优先长kmer，短kmer只补未覆盖区间。
     """
-    minimizers = []
-    n = len(seq)
-    if n < k:
-        return minimizers
-    for i in range(n - w - k + 2):
-        window = [seq[j:j+k] for j in range(i, i+w)]
-        min_kmer = min(window) # 取长度为w的窗口内字典序最小的kmer
-        min_pos = i + window.index(min_kmer) # 记录位置
-        if not minimizers or minimizers[-1][1] != min_pos: # 不重复记录
-            minimizers.append((min_kmer, min_pos))
-    return minimizers
+    m = len(query)
+    covered = [False] * m
+    anchors = []
+    # k_list可调整
+    k_list = []
+    k_val = int(len(ref) * 2 / 3)
+    while k_val >= 10:
+        k_list.append(k_val)
+        k_val = int(k_val * 2 / 3)
+    for k in k_list:
+        # 构建ref的kmer哈希表
+        ref_kmers = collections.defaultdict(list)
+        for i in range(len(ref) - k + 1):
+            kmer = ref[i:i+k]
+            ref_kmers[kmer].append(i)
+        # 正向kmer
+        for j in range(len(query) - k + 1):
+            if any(covered[j:j+k]):
+                continue
+            kmer = query[j:j+k]
+            for r_pos in ref_kmers.get(kmer, []):
+                anchors.append(Anchor(j, r_pos, k, 1))
+                for t in range(j, j+k):
+                    covered[t] = True
+        # 反向kmer
+        rc_query = reverse_complement(query)
+        for j in range(len(rc_query) - k + 1):
+            if any(covered[len(query)-(j+k):len(query)-j]):
+                continue
+            kmer = rc_query[j:j+k]
+            for r_pos in ref_kmers.get(kmer, []):
+                q_start = len(query) - (j + k)
+                anchors.append(Anchor(q_start, r_pos, k, -1))
+                for t in range(q_start, q_start+k):
+                    covered[t] = True
+    # 合并连续/模糊锚点
+    return merge_anchors(anchors)
 
 # 合并连续锚点
-'''！可模糊合并'''
-def merge_anchors(anchors: List[Anchor]) -> List[Anchor]:
+def merge_anchors(anchors: List[Anchor], max_gap: int = 8) -> List[Anchor]:
     """
-    合并query和ref上都连续的锚点为一个更长的锚点。
+    模糊合并：只要锚点方向相同，且query和ref的起点距离在max_gap以内，就合并为一个更长的锚点。
     """
     if not anchors:
         return []
     anchors.sort(key=lambda a: (a.q_start, a.r_start, a.strand))
     merged = [anchors[0]]
     for a in anchors[1:]:
-        last = merged[-1] # 已合并的最后一个锚点
-        # 判断是否可合并：方向相同，且query和ref都连续
+        last = merged[-1]
+        # 方向相同，且query和ref的起点距离都在max_gap以内
         if (a.strand == last.strand and
-            a.q_start == last.q_start + last.length and
-            a.r_start == last.r_start + last.length):
-            last.length += a.length
+            0 < a.q_start - (last.q_start + last.length) <= max_gap and
+            0 < a.r_start - (last.r_start + last.length) <= max_gap):
+            # 合并时把gap也算进长度
+            gap_q = a.q_start - (last.q_start + last.length)
+            last.length += gap_q + a.length  # query和ref的gap视为匹配
         else:
             merged.append(a)
     return merged
-
-# 提取正向和反向的minimizer锚点，并合并连续锚点
-def build_anchors(query: str, ref: str, k: int, w: int) -> List[Anchor]:
-    anchors = []
-    # 构建ref的kmer哈希表（kmer->起点位置）
-    ref_kmers = collections.defaultdict(list)
-    for i in range(len(ref) - k + 1):
-        kmer = ref[i:i+k]
-        ref_kmers[kmer].append(i)
-    # 正向minimize
-    for kmer, q_pos in minimize(query, k, w): # 遍历query的minimizer
-        for r_pos in ref_kmers.get(kmer, []): # 在ref中查找kmer
-            anchors.append(Anchor(q_pos, r_pos, k, 1))
-    # 反向minimize
-    rc_query = reverse_complement(query)
-    for kmer, rc_q_pos in minimize(rc_query, k, w):
-        for r_pos in ref_kmers.get(kmer, []):
-            q_start = len(query) - (rc_q_pos + k)
-            anchors.append(Anchor(q_start, r_pos, k, -1))
-    # 合并连续锚点
-    return merge_anchors(anchors)
 
 # 用二分查找优化的DP，O(A log A)
 def dp(anchors: List[Anchor]) -> List[Anchor]:
@@ -83,20 +88,17 @@ def dp(anchors: List[Anchor]) -> List[Anchor]:
     用二分查找优化的DP，保证主链无重叠，支持倒位。
     """
     # 按ref坐标排序，便于二分查找
-    anchors.sort(key=lambda a: (a.r_start, a.q_start, a.strand))
+    anchors.sort(key=lambda a: (a.q_start, a.r_start, a.strand))
     n = len(anchors)
     dp = [a.length for a in anchors]  # 以第i个锚点结尾的最长链长度，初始化为锚点自身长度
     prev = [-1]*n # 第i个锚点前驱下标
     q_ends = []  # (query_end, idx)，每个锚点qry区间终点和下标
-    # dp_vals = [] # dp值
     for i, a in enumerate(anchors):
-        # 二分查找所有query_end < a.q_start且ref_end < a.r_start的最大dp
         max_dp = 0
         max_j = -1
         for j in range(len(q_ends)):
             q_end, idx = q_ends[j]
-            ref_end = anchors[idx].r_start + anchors[idx].length - 1
-            if q_end < a.q_start:
+            if q_end < a.q_start: # qry区间无重叠
                 if dp[idx] > max_dp:
                     max_dp = dp[idx]
                     max_j = idx
@@ -105,7 +107,6 @@ def dp(anchors: List[Anchor]) -> List[Anchor]:
             prev[i] = max_j
         # 记录当前锚点的query_end
         q_ends.append((a.q_start + a.length - 1, i))
-        # dp_vals.append(dp[i])
     # 回溯最长链
     idx = max(range(n), key=lambda i: dp[i]) if n else -1
     chain = []
@@ -162,13 +163,14 @@ def local_align(q: str, r: str, q_offset=0, r_offset=0, max_gap=1000, strand=1, 
     return results
 
 # 合并连续区间
-def merge_intervals(intervals):
+def merge_intervals(intervals, max_gap=5):
     if not intervals:
         return []
     merged = []
     cur = list(intervals[0])
     for t in intervals[1:]:
-        if t[0] == cur[1] + 1 and t[2] == cur[3] + 1:
+        # 模糊合并：只要query和ref的起点距离上一区间终点都在max_gap以内
+        if 0 < t[0] - cur[1] <= max_gap and 0 < t[2] - cur[3] <= max_gap:
             cur[1] = t[1]
             cur[3] = t[3]
         else:
@@ -178,25 +180,25 @@ def merge_intervals(intervals):
     return merged
 
 # 主流程
-def match(query: str, ref: str, k: int = 8, w: int = 8) -> List[Tuple[int,int,int,int]]:
+def match(query: str, ref: str) -> List[Tuple[int,int,int,int]]:
     """
     :param query: query序列
     :param ref: reference序列
-    :param k: kmer长度
-    :param w: minimizer窗口长度
     :return: 合并后的匹配区间列表
     """
     m, n = len(query), len(ref)
     # 1. 提取minimizer锚点并合并连续锚点
-    anchors = build_anchors(query, ref, k, w)
+    anchors = build_anchors(query, ref)
     print(f"query长度m={m}, reference长度n={n}, 锚点总数A={len(anchors)}")
 
     # 2. O(A log A) DP求最长无重叠主链
     chain = dp(anchors)
+    print(f"dp找到chain={chain}")
+
+
     # 3. gap区间局部比对
     result = []
     last_q = last_r = None
-    last_strand = None
     gap_stats = {'G': 0, 'L': 0}  # gap区间总长度G，单个gap最大长度L
     for anchor in chain:
         if last_q is not None and last_r is not None:
@@ -218,7 +220,6 @@ def match(query: str, ref: str, k: int = 8, w: int = 8) -> List[Tuple[int,int,in
             result.append((rc_q_start, rc_q_end, anchor.r_start, anchor.r_start+anchor.length-1))
         last_q = anchor.q_start + anchor.length - 1 if anchor.strand == 1 else anchor.q_start
         last_r = anchor.r_start + anchor.length - 1
-        last_strand = anchor.strand
     # 末尾gap不处理
     merged_result = merge_intervals(result)
     K = len(merged_result)
