@@ -1,5 +1,8 @@
 import collections
 from typing import List, Tuple
+import math
+import random
+import edlib
 
 class Anchor:
     def __init__(self, q_start, r_start, length, strand):
@@ -17,97 +20,108 @@ def reverse_complement(seq: str) -> str:
     complement = str.maketrans('ATCGatcg', 'TAGCtagc')
     return seq.translate(complement)[::-1]
 
-# 先长后短kmer锚点提取
-def build_anchors(query: str, ref: str) -> List[Anchor]:
-    """
-    先长后短kmer锚点提取，优先长kmer，短kmer只补未覆盖区间。
-    """
+# 简单minhash实现
+HASH_SEEDS = [17, 31, 47, 73, 97, 131, 193, 257, 389, 521]
+def kmer_minhash(s, num_hash=5):
+    # s: kmer字符串
+    # num_hash: 取前几个hash函数
+    hashes = []
+    for i in range(num_hash):
+        h = 0
+        for c in s:
+            h = (h * HASH_SEEDS[i] + ord(c)) % 1000000007
+        hashes.append(h)
+    return tuple(hashes)
+
+# 模糊合并锚点，允许小gap，方向一致且query/ref区间近连续
+def merge_anchors_fuzzy(anchors, max_gap=5):
+    if not anchors:
+        return []
+    anchors.sort(key=lambda a: (a.strand, a.q_start, a.r_start))
+    merged = [anchors[0]]
+    for a in anchors[1:]:
+        last = merged[-1]
+        if (a.strand == last.strand and
+            0 <= a.q_start - (last.q_start + last.length) <= max_gap and
+            0 <= a.r_start - (last.r_start + last.length) <= max_gap):
+            gap_q = a.q_start - (last.q_start + last.length)
+            last.length += gap_q + a.length
+        else:
+            merged.append(a)
+    return merged
+
+# 修改build_anchors，合并锚点后返回
+def build_anchors(query: str, ref: str, max_gap=20) -> List[Anchor]:
     m = len(query)
-    covered = [False] * m
     anchors = []
-    # k_list可调整
+    covered = [False] * m
     k_list = []
     k_val = int(len(ref) * 2 / 3)
     while k_val >= 10:
         k_list.append(k_val)
         k_val = int(k_val * 2 / 3)
     for k in k_list:
-        # 构建ref的kmer哈希表
-        ref_kmers = collections.defaultdict(list)
+        # print(f"start collect kmer for k={k}")
+        ref_minhash = collections.defaultdict(list)
         for i in range(len(ref) - k + 1):
             kmer = ref[i:i+k]
-            ref_kmers[kmer].append(i)
-        # 正向kmer
+            sig = kmer_minhash(kmer)
+            ref_minhash[sig].append(i)
         for j in range(len(query) - k + 1):
             if any(covered[j:j+k]):
                 continue
-            kmer = query[j:j+k]
-            for r_pos in ref_kmers.get(kmer, []):
+            q_kmer = query[j:j+k]
+            sig = kmer_minhash(q_kmer)
+            for r_pos in ref_minhash.get(sig, []):
                 anchors.append(Anchor(j, r_pos, k, 1))
                 for t in range(j, j+k):
                     covered[t] = True
-        # 反向kmer
         rc_query = reverse_complement(query)
         for j in range(len(rc_query) - k + 1):
-            if any(covered[len(query)-(j+k):len(query)-j]):
+            q_kmer = rc_query[j:j+k]
+            sig = kmer_minhash(q_kmer)
+            q_start = len(query) - (j + k)
+            if any(covered[q_start:q_start+k]):
                 continue
-            kmer = rc_query[j:j+k]
-            for r_pos in ref_kmers.get(kmer, []):
-                q_start = len(query) - (j + k)
+            for r_pos in ref_minhash.get(sig, []):
                 anchors.append(Anchor(q_start, r_pos, k, -1))
                 for t in range(q_start, q_start+k):
                     covered[t] = True
-    # 合并连续/模糊锚点
-    return merge_anchors(anchors)
+        # print(f"anchor num: {len(anchors)}")
+    # 合并锚点
+    anchors = merge_anchors_fuzzy(anchors, max_gap=max_gap)
+    return anchors
 
-# 合并连续锚点
-def merge_anchors(anchors: List[Anchor], max_gap: int = 8) -> List[Anchor]:
-    """
-    模糊合并：只要锚点方向相同，且query和ref的起点距离在max_gap以内，就合并为一个更长的锚点。
-    """
-    if not anchors:
-        return []
-    anchors.sort(key=lambda a: (a.q_start, a.r_start, a.strand))
-    merged = [anchors[0]]
-    for a in anchors[1:]:
-        last = merged[-1]
-        # 方向相同，且query和ref的起点距离都在max_gap以内
-        if (a.strand == last.strand and
-            0 < a.q_start - (last.q_start + last.length) <= max_gap and
-            0 < a.r_start - (last.r_start + last.length) <= max_gap):
-            # 合并时把gap也算进长度
-            gap_q = a.q_start - (last.q_start + last.length)
-            last.length += gap_q + a.length  # query和ref的gap视为匹配
-        else:
-            merged.append(a)
-    return merged
+# 新的gap penalty函数
+def penalty(gap_q, gap_r, anchor_len, alpha=1, gamma=0.1, bonus=10, max_gap=20):
+    # 顺滑延申奖励
+    if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap:
+        return -bonus
+    # 重复变异容忍
+    if gap_q > 0 and gap_r < 0:
+        return 0
+    # 其它情况
+    slope_penalty = gamma * abs(math.log((max(gap_q+1,1e-6))/(max(gap_r+1,1e-6))))
+    # gap惩罚被长anchor"稀释"
+    gap_penalty = alpha * max(0, gap_q) / (anchor_len + 1)
+    return gap_penalty + slope_penalty
 
-# 用二分查找优化的DP，O(A log A)
-def dp(anchors: List[Anchor]) -> List[Anchor]:
-    """
-    用二分查找优化的DP，保证主链无重叠，支持倒位。
-    """
-    # 按ref坐标排序，便于二分查找
+# 修改dp，传递anchor长度
+def dp(anchors: List[Anchor], alpha=1, gamma=0.1, bonus=10, max_gap=20) -> List[Anchor]:
     anchors.sort(key=lambda a: (a.q_start, a.r_start, a.strand))
     n = len(anchors)
-    dp = [a.length for a in anchors]  # 以第i个锚点结尾的最长链长度，初始化为锚点自身长度
-    prev = [-1]*n # 第i个锚点前驱下标
-    q_ends = []  # (query_end, idx)，每个锚点qry区间终点和下标
-    for i, a in enumerate(anchors):
-        max_dp = 0
-        max_j = -1
-        for j in range(len(q_ends)):
-            q_end, idx = q_ends[j]
-            if q_end < a.q_start: # qry区间无重叠
-                if dp[idx] > max_dp:
-                    max_dp = dp[idx]
-                    max_j = idx
-        if max_j != -1:
-            dp[i] = max_dp + a.length
-            prev[i] = max_j
-        # 记录当前锚点的query_end
-        q_ends.append((a.q_start + a.length - 1, i))
-    # 回溯最长链
+    dp = [a.length for a in anchors]
+    prev = [-1]*n
+    for j in range(n):
+        for i in range(j):
+            if anchors[i].q_start + anchors[i].length <= anchors[j].q_start:
+                gap_q = anchors[j].q_start - (anchors[i].q_start + anchors[i].length)
+                gap_r = anchors[j].r_start - (anchors[i].r_start + anchors[i].length)
+                p = penalty(gap_q, gap_r, anchors[j].length, alpha=alpha, gamma=gamma, bonus=bonus, max_gap=max_gap)
+                score = dp[i] + anchors[j].length - p
+                if score > dp[j]:
+                    dp[j] = score
+                    prev[j] = i
     idx = max(range(n), key=lambda i: dp[i]) if n else -1
     chain = []
     while idx != -1:
@@ -115,113 +129,118 @@ def dp(anchors: List[Anchor]) -> List[Anchor]:
         idx = prev[idx]
     return chain[::-1]
 
-# Smith-Waterman局部比对
-def smith_waterman(q, r, match_score=2, mismatch_score=-1, gap_open=-2):
-    m, n = len(q), len(r)
-    H = [[0]*(n+1) for _ in range(m+1)]
-    max_score = 0
-    max_pos = (0, 0)
-    for i in range(1, m+1):
-        for j in range(1, n+1):
-            match = H[i-1][j-1] + (match_score if q[i-1] == r[j-1] else mismatch_score)
-            delete = H[i-1][j] + gap_open
-            insert = H[i][j-1] + gap_open
-            H[i][j] = max(0, match, delete, insert)
-            if H[i][j] > max_score:
-                max_score = H[i][j]
-                max_pos = (i, j)
-    i, j = max_pos
-    q_end, r_end = i-1, j-1
-    while i > 0 and j > 0 and H[i][j] > 0:
-        if H[i][j] == H[i-1][j-1] + (match_score if q[i-1] == r[j-1] else mismatch_score):
-            i -= 1
-            j -= 1
-        elif H[i][j] == H[i-1][j] + gap_open:
-            i -= 1
-        else:
-            j -= 1
-    q_start, r_start = i, j
-    return (q_start, q_end, r_start, r_end)
+def calc_edit_dist_ratio(query, ref, q0, q1, r0, r1):
+    # 计算edit distance比例，支持反向
+    qseq = query[q0:q1+1] if q0 <= q1 else reverse_complement(query[q1:q0+1])
+    rseq = ref[r0:r1+1] if r0 <= r1 else reverse_complement(ref[r1:r0+1])
+    if not qseq or not rseq:
+        return 1.0
+    ed = edlib.align(qseq, rseq)['editDistance']
+    return ed / max(1, len(qseq))
 
-# gap区间局部比对，统计gap信息
-def local_align(q: str, r: str, q_offset=0, r_offset=0, max_gap=1000, strand=1, gap_stats=None):
-    results = []
-    if len(q) == 0 or len(r) == 0:
-        return results
-    if gap_stats is not None:
-        gap_stats['G'] += max(len(q), len(r))
-        gap_stats['L'] = max(gap_stats['L'], len(q), len(r))
-    if len(q) > max_gap or len(r) > max_gap:
-        q1, r1 = q[:max_gap//2], r[:max_gap//2]
-        q2, r2 = q[-max_gap//2:], r[-max_gap//2:]
-        results.extend(local_align(q1, r1, q_offset, r_offset, max_gap, strand, gap_stats))
-        results.extend(local_align(q2, r2, q_offset+len(q)-len(q2), r_offset+len(r)-len(r2), max_gap, strand, gap_stats))
-        return results
-    q_start, q_end, r_start, r_end = smith_waterman(q, r)
-    if q_end >= q_start and r_end >= r_start:
-        results.append((q_offset+q_start, q_offset+q_end, r_offset+r_start, r_offset+r_end))
-    return results
-
-# 合并连续区间
-def merge_intervals(intervals, max_gap=5):
-    if not intervals:
+# 合并锚点，要求方向一致、近连续、edit distance低
+def merge_anchors_edlib(anchors, query, ref, edit_dist_thresh=0.1, max_gap=20):
+    if not anchors:
         return []
-    merged = []
-    cur = list(intervals[0])
-    for t in intervals[1:]:
-        # 模糊合并：只要query和ref的起点距离上一区间终点都在max_gap以内
-        if 0 < t[0] - cur[1] <= max_gap and 0 < t[2] - cur[3] <= max_gap:
-            cur[1] = t[1]
-            cur[3] = t[3]
-        else:
-            merged.append(tuple(cur))
-            cur = list(t)
-    merged.append(tuple(cur))
+    anchors.sort(key=lambda a: (a.strand, a.q_start, a.r_start))
+    merged = [anchors[0]]
+    for a in anchors[1:]:
+        last = merged[-1]
+        # 判断是否可合并
+        if (a.strand == last.strand and
+            0 <= a.q_start - (last.q_start + last.length) <= max_gap and
+            0 <= a.r_start - (last.r_start + last.length) <= max_gap):
+            # 合并后区间edit distance比例
+            q0 = last.q_start
+            q1 = a.q_start + a.length - 1
+            r0 = last.r_start
+            r1 = a.r_start + a.length - 1
+            if calc_edit_dist_ratio(query, ref, q0, q1, r0, r1) <= edit_dist_thresh:
+                last.length = (a.q_start + a.length) - last.q_start
+                continue
+        merged.append(a)
     return merged
 
+# 找主链gap区间
+def find_gaps(chain, m, n):
+    gaps = []
+    last_q = -1
+    last_r = -1
+    for a in chain:
+        q_start = a.q_start
+        r_start = a.r_start
+        if last_q != -1 and last_r != -1:
+            if q_start > last_q + 1 and r_start > last_r + 1:
+                gaps.append(((last_q+1, q_start-1), (last_r+1, r_start-1)))
+        last_q = a.q_start + a.length - 1
+        last_r = a.r_start + a.length - 1
+    return gaps
+
+# gap区间递归edlib局部比对，返回高质量区间
+def edlib_local_align(qseq, rseq, q_offset, r_offset, edit_dist_thresh=0.1, min_len=30):
+    results = []
+    if len(qseq) < min_len or len(rseq) < min_len:
+        return results
+    # edlib全局比对
+    res = edlib.align(qseq, rseq, mode='HW')
+    if res['editDistance'] / max(1, len(qseq)) <= edit_dist_thresh and len(qseq) >= min_len:
+        results.append((q_offset, q_offset+len(qseq)-1, r_offset, r_offset+len(rseq)-1))
+        return results
+    # 否则递归分割
+    mid = len(qseq) // 2
+    results += edlib_local_align(qseq[:mid], rseq[:mid], q_offset, r_offset, edit_dist_thresh, min_len)
+    results += edlib_local_align(qseq[mid:], rseq[mid:], q_offset+mid, r_offset+mid, edit_dist_thresh, min_len)
+    return results
+
 # 主流程
-def match(query: str, ref: str) -> List[Tuple[int,int,int,int]]:
-    """
-    :param query: query序列
-    :param ref: reference序列
-    :return: 合并后的匹配区间列表
-    """
+# 保证接口不变
+def match(query: str, ref: str, max_gap: int = 50, merge_chain: bool = True,
+          alpha=43, gamma=6, bonus=16):
     m, n = len(query), len(ref)
-    # 1. 提取minimizer锚点并合并连续锚点
-    anchors = build_anchors(query, ref)
-    print(f"query长度m={m}, reference长度n={n}, 锚点总数A={len(anchors)}")
-
-    # 2. O(A log A) DP求最长无重叠主链
-    chain = dp(anchors)
-    print(f"dp找到chain={chain}")
-
-
-    # 3. gap区间局部比对
-    result = []
-    last_q = last_r = None
-    gap_stats = {'G': 0, 'L': 0}  # gap区间总长度G，单个gap最大长度L
-    for anchor in chain:
-        if last_q is not None and last_r is not None:
-            # gap区间
-            if anchor.strand == 1:
-                q_gap = query[last_q+1:anchor.q_start]
-            else:
-                q_gap = reverse_complement(query[anchor.q_start+anchor.length:last_q]) if last_q > anchor.q_start+anchor.length else ''
-            r_gap = ref[last_r+1:anchor.r_start]
-            if q_gap and r_gap:
-                gap_results = local_align(q_gap, r_gap, last_q+1 if anchor.strand==1 else anchor.q_start+anchor.length, last_r+1, 1000, anchor.strand, gap_stats)
-                result.extend(gap_results)
-        if anchor.strand == 1:
-            result.append((anchor.q_start, anchor.q_start+anchor.length-1, anchor.r_start, anchor.r_start+anchor.length-1))
+    # 1. 先长后短提取anchors
+    anchors_obj = build_anchors(query, ref, max_gap=max_gap)
+    # print(f"query长度m={m}, reference长度n={n}, 锚点总数A={len(anchors_obj)}")
+    # 2. DP主链
+    chain = dp(anchors_obj, alpha=alpha, gamma=gamma, bonus=bonus, max_gap=max_gap)
+    # 3. 合并主链区间（方向一致、近连续、edit distance低）
+    chain = merge_anchors_edlib(chain, query, ref, edit_dist_thresh=0.1, max_gap=max_gap)
+    # 4. gap区间补充
+    gaps = find_gaps(chain, m, n)
+    anchors_gap = []
+    final_ans = []
+    for a in chain:
+        if a.strand == 1:
+            final_ans.append((a.q_start, a.q_start+a.length-1, a.r_start, a.r_start+a.length-1))
         else:
-            q_len = len(query)
+            rc_q_start = a.q_start
+            rc_q_end = a.q_start+a.length-1
+            final_ans.append((rc_q_start, rc_q_end, a.r_start, a.r_start+a.length-1))
+    for (qgap, rgap) in gaps:
+        q0, q1 = qgap
+        r0, r1 = rgap
+        # 用更短kmer补充anchors
+        anchors_short = build_anchors(query[q0:q1+1], ref[r0:r1+1], max_gap=5)
+        # 坐标映射回全局
+        for a in anchors_short:
+            a.q_start += q0
+            a.r_start += r0
+        anchors_gap.extend(anchors_short)
+        # 递归edlib局部比对补充高质量区间
+        high_quality = edlib_local_align(query[q0:q1+1], ref[r0:r1+1], q0, r0, edit_dist_thresh=0.1, min_len=30)
+        final_ans.extend(high_quality)
+    # 5. anchors合并去重
+    all_anchors = anchors_obj + anchors_gap
+    all_anchors = merge_anchors_edlib(all_anchors, query, ref, edit_dist_thresh=0.1, max_gap=max_gap)
+    anchors_out = []
+    for anchor in all_anchors:
+        if anchor.strand == 1:
+            anchors_out.append((anchor.q_start, anchor.q_start+anchor.length-1, anchor.r_start, anchor.r_start+anchor.length-1))
+        else:
             rc_q_start = anchor.q_start
             rc_q_end = anchor.q_start+anchor.length-1
-            result.append((rc_q_start, rc_q_end, anchor.r_start, anchor.r_start+anchor.length-1))
-        last_q = anchor.q_start + anchor.length - 1 if anchor.strand == 1 else anchor.q_start
-        last_r = anchor.r_start + anchor.length - 1
-    # 末尾gap不处理
-    merged_result = merge_intervals(result)
-    K = len(merged_result)
-    print(f"gap区间总长度G={gap_stats['G']}, 单个gap最大长度L={gap_stats['L']}, 匹配区间数K={K}")
-    return merged_result 
+            anchors_out.append((rc_q_start, rc_q_end, anchor.r_start, anchor.r_start+anchor.length-1))
+    # 6. final_ans去重、排序
+    final_ans = list(set(final_ans))
+    final_ans.sort(key=lambda x: min(x[0], x[1]))
+    # print(f"匹配区间数K={len(final_ans)}")
+    return {'final_ans': final_ans, 'anchors': anchors_out} 

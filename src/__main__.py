@@ -19,6 +19,10 @@ def main():
     parser = argparse.ArgumentParser(description='复杂DNA序列比对工具')
     parser.add_argument('--input', type=str, default=None, help='输入文件（格式同input.txt）')
     parser.add_argument('--output', type=str, default=None, help='输出文件')
+    parser.add_argument('--max_gap', type=int, default=34, help='gap区间最大合并距离')
+    parser.add_argument('--bonus', type=float, default=40, help='顺滑延申奖励')
+    parser.add_argument('--alpha', type=float, default=100, help='query gap惩罚系数')
+    parser.add_argument('--gamma', type=float, default=3, help='斜率惩罚系数')
     args = parser.parse_args()
 
     print("algorithm start")
@@ -31,14 +35,18 @@ def main():
         print('请输入reference序列:')
         ref = input().strip()
     # 2. 匹配
-    result = match(query, ref)
+    result = match(query, ref, max_gap=args.max_gap, bonus=args.bonus, alpha=args.alpha, gamma=args.gamma)
     # 3. 输出
+    final_ans = result['final_ans']
+    anchors = result['anchors']
     if args.output:
         with open(args.output, 'w', encoding='utf-8') as f:
-            f.write(str(result))
+            f.write(f"final_ans = {final_ans}\n")
+            f.write(f"anchors = {anchors}\n")
     else:
         print('比对结果:')
-        print(result)
+        print(f"final_ans = {final_ans}")
+        print(f"anchors = {anchors}")
     print("algorithm complete")
 
 if __name__ == '__main__':
