@@ -1,6 +1,8 @@
 import collections
 from typing import List
 import math
+import numpy as np
+from numba import njit
 
 class Anchor:
     def __init__(self, q_start, r_start, length, strand):
@@ -31,28 +33,71 @@ def kmer_minhash(s, num_hash=5):
         hashes.append(h)
     return tuple(hashes)
 
-# 修改build_anchors，使用更丰富的k值列表，从len(ref)*0.9开始，逐步减少到5
-def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3) -> List[Anchor]:
+def smart_k_list(query, ref, min_k=3, k_ratio=2/3, min_anchors=10):
+    k_list = []
+    k_val = int(len(ref) * 0.9)
+    prev_k = None
+    while k_val >= min_k:
+        # 统计该k下的锚点数（正向+反向）
+        ref_minhash = collections.defaultdict(list)
+        for i in range(len(ref) - k_val + 1):
+            kmer = ref[i:i+k_val]
+            sig = kmer_minhash(kmer)
+            ref_minhash[sig].append(i)
+        anchor_count = 0
+        for j in range(len(query) - k_val + 1):
+            q_kmer = query[j:j+k_val]
+            sig = kmer_minhash(q_kmer)
+            anchor_count += len(ref_minhash.get(sig, []))
+        rc_query = reverse_complement(query)
+        for j in range(len(rc_query) - k_val + 1):
+            q_kmer = rc_query[j:j+k_val]
+            sig = kmer_minhash(q_kmer)
+            anchor_count += len(ref_minhash.get(sig, []))
+        if prev_k is not None and anchor_count < min_anchors and k_val > min_k:
+            k_mid = int((k_val + prev_k) / 2)
+            if k_mid not in k_list and k_mid >= min_k:
+                k_list.append(k_mid)
+        k_list.append(k_val)
+        prev_k = k_val
+        k_val = int(k_val * k_ratio)
+    k_list = sorted(set(k_list), reverse=True)
+    return k_list
+
+# anchor延伸（numba加速）
+@njit
+def extend_anchor_numba(query_arr, ref_arr, q_start, r_start, length, q_len, r_len):
+    # 向左延伸
+    l = 0
+    while q_start - l - 1 >= 0 and r_start - l - 1 >= 0:
+        if query_arr[q_start - l - 1] != ref_arr[r_start - l - 1]:
+            break
+        l += 1
+    # 向右延伸
+    r = 0
+    while q_start + length + r < q_len and r_start + length + r < r_len:
+        if query_arr[q_start + length + r] != ref_arr[r_start + length + r]:
+            break
+        r += 1
+    return q_start - l, r_start - l, length + l + r
+
+def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3, min_anchors=10) -> List[Anchor]:
     m = len(query)
     anchors = []
     covered = [False] * m
-    k_list = []
-    k_val = int(len(ref) * 0.9)
-    while k_val >= min_k:
-        k_list.append(k_val)
-        k_val = int(k_val * k_ratio)
+    k_list = smart_k_list(query, ref, min_k=min_k, k_ratio=k_ratio, min_anchors=min_anchors)
     long_anchors = []  # 存储长anchor区间 (q0, q1, r0, r1, strand)
     for idx, k in enumerate(k_list):
         ref_minhash = collections.defaultdict(list)
         for i in range(len(ref) - k + 1):
             kmer = ref[i:i+k]
-            sig = kmer_minhash(kmer)
+            sig = tuple(kmer_minhash(kmer))
             ref_minhash[sig].append(i)
         for j in range(len(query) - k + 1):
             if any(covered[j:j+k]):
                 continue
             q_kmer = query[j:j+k]
-            sig = kmer_minhash(q_kmer)
+            sig = tuple(kmer_minhash(q_kmer))
             for r_pos in ref_minhash.get(sig, []):
                 q0, q1 = j, j+k-1
                 r0, r1 = r_pos, r_pos+k-1
@@ -74,7 +119,7 @@ def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3) -> Lis
             if any(covered[len(query) - (j + k):len(query) - j]):
                 continue
             q_kmer = rc_query[j:j+k]
-            sig = kmer_minhash(q_kmer)
+            sig = tuple(kmer_minhash(q_kmer))
             q_start = len(query) - (j + k)
             for r_pos in ref_minhash.get(sig, []):
                 q0, q1 = q_start, q_start+k-1
@@ -172,14 +217,48 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                     # 合并后区间应为 (last[0], q1, r0, last[3])
                     delta_q = q1 - last[0]
                     delta_r = last[3] - r0
-                    slope = abs(delta_q / (delta_r + 1e-6)) if delta_r != 0 else 0
+                    slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
                     slope_ok = abs(slope - 1) <= slope_eps
                     if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
                         merged_intervals[-1] = [last[0], q1, r0, last[3], strand]
                         continue
             merged_intervals.append([q0, q1, r0, r1, strand])
-    final_ans = [(q0, q1, r0, r1, strand) for q0, q1, r0, r1, strand in merged_intervals]
-    final_ans = list(set(final_ans))
+
+    # 主链区间两端延伸，不能导致query区间重叠，merge逻辑不变
+    extended_intervals = []
+    prev_q1 = -1
+    for idx, (q0, q1, r0, r1, strand) in enumerate(merged_intervals):
+        # 向左延伸
+        l = 0
+        while True:
+            nq0 = q0 - 1
+            nr0 = r0 - 1 if strand == 1 else r0 + 1
+            if nq0 <= prev_q1 or nq0 < 0 or nr0 < 0 or nr0 >= len(ref):
+                break
+            if query[nq0] != (ref[nr0] if strand == 1 else reverse_complement(ref[nr0])):
+                break
+            q0 = nq0
+            r0 = nr0
+            l += 1
+        # 向右延伸
+        r = 0
+        while True:
+            nq1 = q1 + 1
+            nr1 = r1 + 1 if strand == 1 else r1 - 1
+            if nq1 >= len(query) or nq1 <= q1 or nr1 < 0 or nr1 >= len(ref):
+                break
+            # 不能与下一区间重叠
+            if idx + 1 < len(merged_intervals) and nq1 >= merged_intervals[idx + 1][0]:
+                break
+            if query[nq1] != (ref[nr1] if strand == 1 else reverse_complement(ref[nr1])):
+                break
+            q1 = nq1
+            r1 = nr1
+            r += 1
+        extended_intervals.append((q0, q1, r0, r1, strand))
+        prev_q1 = q1
+
+    final_ans = list(set(extended_intervals))
     final_ans.sort(key=lambda x: min(x[0], x[1]))
     anchors_out = []
     for a in anchors_obj:

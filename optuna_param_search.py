@@ -102,7 +102,7 @@ def objective(trial, param_space=None):
         bonus = trial.suggest_float('bonus', 1, 30)
         slope_eps = trial.suggest_float('slope_eps', 0.05, 0.5)
         min_k = trial.suggest_int('min_k', 3, 15)
-        k_ratio = trial.suggest_float('k_ratio', 0.4, 0.9)
+        k_ratio = trial.suggest_float('k_ratio', 0.4, 0.94)
     else:
         max_gap = trial.suggest_int('max_gap', param_space['max_gap'][0], param_space['max_gap'][1])
         alpha = trial.suggest_float('alpha', param_space['alpha'][0], param_space['alpha'][1])
