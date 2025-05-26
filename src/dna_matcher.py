@@ -184,9 +184,16 @@ def dp(anchors: List[Anchor], alpha=1, gamma=0.1, bonus=10, max_gap=40) -> List[
         idx = prev[idx]
     return chain[::-1]
 
-def edit_distance_simple(s1, s2):
-    # 只支持等长字符串的SNP计数
-    return sum(a != b for a, b in zip(s1, s2))
+def edit_distance_simple(s1, s2, strand=1, r0=None, r1=None):
+    # s1: query区间
+    # s2: ref区间
+    # strand: 1正向，-1反向
+    # r0, r1: ref区间起止（反向时用）
+    if strand == 1:
+        return sum(a != b for a, b in zip(s1, s2))
+    else:
+        # 反向时s2为ref[r0:r1+1]，s1[i]应比对ref[r1-(i-q0)]
+        return sum(s1[i] != s2[len(s2)-1-i] for i in range(len(s1)))
 
 def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3, min_k=3, k_ratio=2/3, ex_max_edit_ratio=0.1):
     anchors_obj = build_anchors(query, ref, max_gap=max_gap, min_k=min_k, k_ratio=k_ratio)
@@ -228,57 +235,113 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                         continue
             merged_intervals.append([q0, q1, r0, r1, strand])
 
-    # 主链区间两端延伸，允许少量错配，不能导致query区间重叠，merge逻辑不变
+    # 主链区间两端延伸，允许少量错配，不能导致query区间重叠
     extended_intervals = []
     prev_q1 = -1
     for idx, (q0, q1, r0, r1, strand) in enumerate(merged_intervals):
+        orig_q0, orig_q1, orig_r0, orig_r1 = q0, q1, r0, r1
         # 向左延伸
         while True:
-            nq0 = q0 - 1
-            nr0 = r0 - 1 if strand == 1 else r0 + 1
-            if nq0 <= prev_q1 or nq0 < 0 or nr0 < 0 or nr0 >= len(ref):
-                break
-            # 取新区间
-            new_query = query[nq0:q1+1]
             if strand == 1:
-                new_ref = ref[nr0:r1+1]
+                nq0 = q0 - 1
+                nr0 = r0 - 1
+                nr1 = r1
             else:
-                # 反向互补区间
-                ref_sub = ref[nr0:r1+1] if nr0 < r1 else ref[r1:nr0+1][::-1]
-                new_ref = reverse_complement(ref_sub)
+                nq0 = q0 - 1
+                nr0 = r0
+                nr1 = r1 + 1
+            if nq0 <= prev_q1 or nq0 < 0:
+                break
+            if strand == 1:
+                if nr0 < 0:
+                    break
+                new_query = query[nq0:q1+1]
+                new_ref = ref[nr0:nr1+1]
+            else:
+                if nr1 >= len(ref):
+                    break
+                new_query = query[nq0:q1+1]
+                new_ref = ref[nr0:nr1+1]
             if len(new_query) != len(new_ref):
                 break
-            ed = edit_distance_simple(new_query, new_ref)
+            ed = edit_distance_simple(new_query, new_ref, strand, nr0, nr1)
             if ed / len(new_query) > ex_max_edit_ratio:
                 break
             q0 = nq0
-            r0 = nr0
+            if strand == 1:
+                r0 = nr0
+            else:
+                r1 = nr1
         # 向右延伸
         while True:
-            nq1 = q1 + 1
-            nr1 = r1 + 1 if strand == 1 else r1 - 1
-            if nq1 >= len(query) or nq1 <= q1 or nr1 < 0 or nr1 >= len(ref):
+            if strand == 1:
+                nq1 = q1 + 1
+                nr0 = r0
+                nr1 = r1 + 1
+            else:
+                nq1 = q1 + 1
+                nr0 = r0 - 1
+                nr1 = r1
+            if nq1 >= len(query) or nq1 <= q1:
                 break
             # 不能与下一区间重叠
             if idx + 1 < len(merged_intervals) and nq1 >= merged_intervals[idx + 1][0]:
                 break
-            new_query = query[q0:nq1+1]
             if strand == 1:
-                new_ref = ref[r0:nr1+1]
+                if nr1 >= len(ref):
+                    break
+                new_query = query[q0:nq1+1]
+                new_ref = ref[nr0:nr1+1]
             else:
-                ref_sub = ref[nr1:r0+1][::-1] if nr1 < r0 else ref[r0:nr1+1]
-                new_ref = reverse_complement(ref_sub)
+                if nr0 < 0:
+                    break
+                new_query = query[q0:nq1+1]
+                new_ref = ref[nr0:nr1+1]
             if len(new_query) != len(new_ref):
                 break
-            ed = edit_distance_simple(new_query, new_ref)
+            ed = edit_distance_simple(new_query, new_ref, strand, nr0, nr1)
             if ed / len(new_query) > ex_max_edit_ratio:
                 break
             q1 = nq1
-            r1 = nr1
-        extended_intervals.append((q0, q1, r0, r1, strand))
+            if strand == 1:
+                r1 = nr1
+            else:
+                r0 = nr0
+        extended_intervals.append([q0, q1, r0, r1, strand])
         prev_q1 = q1
 
-    final_ans = list(set(extended_intervals))
+    # 延伸后再执行一次merge操作，逻辑与前面一致
+    merged2 = []
+    for a in extended_intervals:
+        q0, q1, r0, r1, strand = a
+        if not merged2:
+            merged2.append([q0, q1, r0, r1, strand])
+        else:
+            last = merged2[-1]
+            if strand == last[4]:
+                if strand == 1:
+                    gap_q = q0 - (last[1] + 1)
+                    gap_r = r0 - (last[3] + 1)
+                    delta_q = q1 - last[0]
+                    delta_r = r1 - last[2]
+                    slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
+                    slope_ok = abs(slope - 1) <= slope_eps
+                    if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
+                        merged2[-1] = [last[0], q1, last[2], r1, strand]
+                        continue
+                else:
+                    gap_q = q0 - (last[1] + 1)
+                    gap_r = last[2] - (r1 + 1)
+                    delta_q = q1 - last[0]
+                    delta_r = last[3] - r0
+                    slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
+                    slope_ok = abs(slope - 1) <= slope_eps
+                    if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
+                        merged2[-1] = [last[0], q1, r0, last[3], strand]
+                        continue
+            merged2.append([q0, q1, r0, r1, strand])
+
+    final_ans = list(set(tuple(x) for x in merged2))
     final_ans.sort(key=lambda x: min(x[0], x[1]))
     anchors_out = []
     for a in anchors_obj:
