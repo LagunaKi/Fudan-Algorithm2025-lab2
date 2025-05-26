@@ -32,17 +32,17 @@ def kmer_minhash(s, num_hash=5):
     return tuple(hashes)
 
 # 修改build_anchors，使用更丰富的k值列表，从len(ref)*0.9开始，逐步减少到5
-def build_anchors(query: str, ref: str, max_gap=20) -> List[Anchor]:
+def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3) -> List[Anchor]:
     m = len(query)
     anchors = []
     covered = [False] * m
     k_list = []
     k_val = int(len(ref) * 0.9)
-    while k_val >= 5:
+    while k_val >= min_k:
         k_list.append(k_val)
-        k_val = int(k_val * 2 / 3)
-    for k in k_list:
-        # print(f"start collect kmer for k={k}")
+        k_val = int(k_val * k_ratio)
+    long_anchors = []  # 存储长anchor区间 (q0, q1, r0, r1, strand)
+    for idx, k in enumerate(k_list):
         ref_minhash = collections.defaultdict(list)
         for i in range(len(ref) - k + 1):
             kmer = ref[i:i+k]
@@ -54,22 +54,44 @@ def build_anchors(query: str, ref: str, max_gap=20) -> List[Anchor]:
             q_kmer = query[j:j+k]
             sig = kmer_minhash(q_kmer)
             for r_pos in ref_minhash.get(sig, []):
+                q0, q1 = j, j+k-1
+                r0, r1 = r_pos, r_pos+k-1
+                if idx > 0:  # 不是最长k时，判断是否被长anchor共线覆盖
+                    found = False
+                    for la in long_anchors:
+                        if (la[4] == 1 and la[0] <= q0 and la[1] >= q1 and la[2] <= r0 and la[3] >= r1):
+                            found = True
+                            break
+                    if found:
+                        continue
                 anchors.append(Anchor(j, r_pos, k, 1))
                 for t in range(j, j+k):
                     covered[t] = True
+                if idx == 0:
+                    long_anchors.append((q0, q1, r0, r1, 1))
         rc_query = reverse_complement(query)
         for j in range(len(rc_query) - k + 1):
+            if any(covered[len(query) - (j + k):len(query) - j]):
+                continue
             q_kmer = rc_query[j:j+k]
             sig = kmer_minhash(q_kmer)
             q_start = len(query) - (j + k)
-            if any(covered[q_start:q_start+k]):
-                continue
             for r_pos in ref_minhash.get(sig, []):
+                q0, q1 = q_start, q_start+k-1
+                r0, r1 = r_pos, r_pos+k-1
+                if idx > 0:
+                    found = False
+                    for la in long_anchors:
+                        if (la[4] == -1 and la[0] <= q0 and la[1] >= q1 and la[2] <= r0 and la[3] >= r1):
+                            found = True
+                            break
+                    if found:
+                        continue
                 anchors.append(Anchor(q_start, r_pos, k, -1))
                 for t in range(q_start, q_start+k):
                     covered[t] = True
-        # print(f"anchor num: {len(anchors)}")
-    # 合并锚点
+                if idx == 0:
+                    long_anchors.append((q0, q1, r0, r1, -1))
     return anchors
 
 # 新的gap penalty函数
@@ -117,8 +139,8 @@ def dp(anchors: List[Anchor], alpha=1, gamma=0.1, bonus=10, max_gap=40) -> List[
         idx = prev[idx]
     return chain[::-1]
 
-def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3):
-    anchors_obj = build_anchors(query, ref, max_gap=max_gap)
+def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3, min_k=3, k_ratio=2/3):
+    anchors_obj = build_anchors(query, ref, max_gap=max_gap, min_k=min_k, k_ratio=k_ratio)
     chain = dp(anchors_obj, alpha=alpha, gamma=gamma, bonus=bonus, max_gap=max_gap)
     merged_intervals = []
     for a in chain:
@@ -141,7 +163,6 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                     slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
                     slope_ok = abs(slope - 1) <= slope_eps
                     if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
-                        # 合并
                         merged_intervals[-1] = [last[0], q1, last[2], r1, strand]
                         continue
                 # 反向

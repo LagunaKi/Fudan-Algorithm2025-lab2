@@ -19,11 +19,13 @@ def main():
     parser = argparse.ArgumentParser(description='复杂DNA序列比对工具')
     parser.add_argument('--input', type=str, default=None, help='输入文件（格式同input.txt）')
     parser.add_argument('--output', type=str, default=None, help='输出文件')
-    parser.add_argument('--max_gap', type=int, default=34, help='gap区间最大合并距离')
-    parser.add_argument('--alpha', type=float, default=50, help='query gap惩罚系数')
-    parser.add_argument('--gamma', type=float, default=4, help='斜率惩罚系数')
-    parser.add_argument('--bonus', type=float, default=16, help='顺滑延申奖励')
-    parser.add_argument('--slope_eps', type=float, default=0.3, help='主链合并斜率偏差阈值')
+    parser.add_argument('--max_gap', type=int, default=35, help='gap区间最大合并距离')
+    parser.add_argument('--alpha', type=float, default=31.5, help='query gap惩罚系数')
+    parser.add_argument('--gamma', type=float, default=8.7, help='斜率惩罚系数')
+    parser.add_argument('--bonus', type=float, default=12, help='顺滑延申奖励')
+    parser.add_argument('--slope_eps', type=float, default=0.42, help='主链合并斜率偏差阈值')
+    parser.add_argument('--min_k', type=int, default=3, help='最小kmer长度')
+    parser.add_argument('--k_ratio', type=float, default=0.89, help='kmer递减比例')
     args = parser.parse_args()
 
     print("algorithm start")
@@ -34,7 +36,7 @@ def main():
         query = input().strip()
         print('请输入reference序列:')
         ref = input().strip()
-    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus, slope_eps=args.slope_eps)
+    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus, slope_eps=args.slope_eps, min_k=args.min_k, k_ratio=args.k_ratio)
     final_ans = result['final_ans']
     anchors = result['anchors']
     if args.output:
