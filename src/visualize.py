@@ -1,7 +1,13 @@
+'''
+python src/visualize.py --input output.txt
+python src/visualize.py --input output.txt --img_size 3000 --query_len 10000 --ref_len 8000
+'''
+
 import argparse
 import ast
 import plotly.graph_objects as go
 import plotly.io as pio
+
 pio.renderers.default = "browser"
 
 def read_output(filename):
@@ -15,7 +21,7 @@ def read_output(filename):
 
 def visualize_alignment_plotly(final_ans, anchors, final_ans_strand, anchors_strand, query_len, ref_len):
     fig = go.Figure()
-    # final_ans主链
+    # final_ans
     for (q0, q1, r0, r1), strand in zip(final_ans, final_ans_strand):
         color = 'blue' if strand == 1 else 'violet'
         name = '主链-正向' if strand == 1 else '主链-反向'
@@ -27,7 +33,7 @@ def visualize_alignment_plotly(final_ans, anchors, final_ans_strand, anchors_str
             legendgroup=name,
             showlegend=True
         ))
-    # anchors（正向红色，反向半透明橙色，默认legendonly）
+    # anchors（正向红色，反向半透明橙色）
     if anchors:
         # 正向
         x_anchors_pos, y_anchors_pos = [], []
@@ -62,7 +68,7 @@ def visualize_alignment_plotly(final_ans, anchors, final_ans_strand, anchors_str
                 visible='legendonly'
             ))
     fig.update_layout(
-        title='DNA序列比对可视化',
+        title='DNA序列比对',
         xaxis_title='Query',
         yaxis_title='Reference',
         width=800,
@@ -75,18 +81,12 @@ def visualize_alignment_plotly(final_ans, anchors, final_ans_strand, anchors_str
     fig.show()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='DNA比对结果可视化工具（plotly版）')
+    parser = argparse.ArgumentParser(description='DNA比对结果可视化')
     parser.add_argument('--input', type=str, default='output.txt', help='输入output.txt')
     args = parser.parse_args()
 
     final_ans, anchors, final_ans_strand, anchors_strand = read_output(args.input)
-    # 自动推断query/ref长度
     all_quads = final_ans + anchors
     query_len = max([max(q0, q1) for q0, q1, _, _ in all_quads]) + 1 if all_quads else 0
     ref_len = max([max(r0, r1) for _, _, r0, r1 in all_quads]) + 1 if all_quads else 0
     visualize_alignment_plotly(final_ans, anchors, final_ans_strand, anchors_strand, query_len, ref_len)
-
-    '''
-    python src/visualize.py --input output.txt
-    python src/visualize.py --input output.txt --img_size 3000 --query_len 10000 --ref_len 8000
-    '''
