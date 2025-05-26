@@ -26,6 +26,7 @@ def main():
     parser.add_argument('--slope_eps', type=float, default=0.42, help='主链合并斜率偏差阈值')
     parser.add_argument('--min_k', type=int, default=3, help='最小kmer长度')
     parser.add_argument('--k_ratio', type=float, default=0.8898, help='kmer递减比例')
+    parser.add_argument('--ex_max_edit_ratio', type=float, default=0.1, help='主链区间延伸允许的最大edit distance比例')
     args = parser.parse_args()
 
     print("algorithm start")
@@ -36,7 +37,7 @@ def main():
         query = input().strip()
         print('请输入reference序列:')
         ref = input().strip()
-    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus, slope_eps=args.slope_eps, min_k=args.min_k, k_ratio=args.k_ratio)
+    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus, slope_eps=args.slope_eps, min_k=args.min_k, k_ratio=args.k_ratio, ex_max_edit_ratio=args.ex_max_edit_ratio)
     final_ans = result['final_ans']
     anchors = result['anchors']
     if args.output:

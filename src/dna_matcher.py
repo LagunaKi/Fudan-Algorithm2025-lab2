@@ -184,7 +184,11 @@ def dp(anchors: List[Anchor], alpha=1, gamma=0.1, bonus=10, max_gap=40) -> List[
         idx = prev[idx]
     return chain[::-1]
 
-def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3, min_k=3, k_ratio=2/3):
+def edit_distance_simple(s1, s2):
+    # 只支持等长字符串的SNP计数
+    return sum(a != b for a, b in zip(s1, s2))
+
+def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3, min_k=3, k_ratio=2/3, ex_max_edit_ratio=0.1):
     anchors_obj = build_anchors(query, ref, max_gap=max_gap, min_k=min_k, k_ratio=k_ratio)
     chain = dp(anchors_obj, alpha=alpha, gamma=gamma, bonus=bonus, max_gap=max_gap)
     merged_intervals = []
@@ -224,24 +228,32 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                         continue
             merged_intervals.append([q0, q1, r0, r1, strand])
 
-    # 主链区间两端延伸，不能导致query区间重叠，merge逻辑不变
+    # 主链区间两端延伸，允许少量错配，不能导致query区间重叠，merge逻辑不变
     extended_intervals = []
     prev_q1 = -1
     for idx, (q0, q1, r0, r1, strand) in enumerate(merged_intervals):
         # 向左延伸
-        l = 0
         while True:
             nq0 = q0 - 1
             nr0 = r0 - 1 if strand == 1 else r0 + 1
             if nq0 <= prev_q1 or nq0 < 0 or nr0 < 0 or nr0 >= len(ref):
                 break
-            if query[nq0] != (ref[nr0] if strand == 1 else reverse_complement(ref[nr0])):
+            # 取新区间
+            new_query = query[nq0:q1+1]
+            if strand == 1:
+                new_ref = ref[nr0:r1+1]
+            else:
+                # 反向互补区间
+                ref_sub = ref[nr0:r1+1] if nr0 < r1 else ref[r1:nr0+1][::-1]
+                new_ref = reverse_complement(ref_sub)
+            if len(new_query) != len(new_ref):
+                break
+            ed = edit_distance_simple(new_query, new_ref)
+            if ed / len(new_query) > ex_max_edit_ratio:
                 break
             q0 = nq0
             r0 = nr0
-            l += 1
         # 向右延伸
-        r = 0
         while True:
             nq1 = q1 + 1
             nr1 = r1 + 1 if strand == 1 else r1 - 1
@@ -250,11 +262,19 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
             # 不能与下一区间重叠
             if idx + 1 < len(merged_intervals) and nq1 >= merged_intervals[idx + 1][0]:
                 break
-            if query[nq1] != (ref[nr1] if strand == 1 else reverse_complement(ref[nr1])):
+            new_query = query[q0:nq1+1]
+            if strand == 1:
+                new_ref = ref[r0:nr1+1]
+            else:
+                ref_sub = ref[nr1:r0+1][::-1] if nr1 < r0 else ref[r0:nr1+1]
+                new_ref = reverse_complement(ref_sub)
+            if len(new_query) != len(new_ref):
+                break
+            ed = edit_distance_simple(new_query, new_ref)
+            if ed / len(new_query) > ex_max_edit_ratio:
                 break
             q1 = nq1
             r1 = nr1
-            r += 1
         extended_intervals.append((q0, q1, r0, r1, strand))
         prev_q1 = q1
 

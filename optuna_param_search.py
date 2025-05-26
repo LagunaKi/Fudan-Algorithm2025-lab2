@@ -103,6 +103,7 @@ def objective(trial, param_space=None):
         slope_eps = trial.suggest_float('slope_eps', 0.05, 0.5)
         min_k = trial.suggest_int('min_k', 3, 15)
         k_ratio = trial.suggest_float('k_ratio', 0.4, 0.94)
+        ex_max_edit_ratio = trial.suggest_float('ex_max_edit_ratio', 0.05, 0.2)
     else:
         max_gap = trial.suggest_int('max_gap', param_space['max_gap'][0], param_space['max_gap'][1])
         alpha = trial.suggest_float('alpha', param_space['alpha'][0], param_space['alpha'][1])
@@ -111,12 +112,13 @@ def objective(trial, param_space=None):
         slope_eps = trial.suggest_float('slope_eps', param_space['slope_eps'][0], param_space['slope_eps'][1])
         min_k = trial.suggest_int('min_k', param_space['min_k'][0], param_space['min_k'][1])
         k_ratio = trial.suggest_float('k_ratio', param_space['k_ratio'][0], param_space['k_ratio'][1])
+        ex_max_edit_ratio = trial.suggest_float('ex_max_edit_ratio', param_space['ex_max_edit_ratio'][0], param_space['ex_max_edit_ratio'][1])
     cmd = [sys.executable, '-m', 'src', '--input', 'input2.txt', '--output', 'output2.txt',
-           '--max_gap', str(max_gap), '--alpha', str(alpha), '--gamma', str(gamma), '--bonus', str(bonus), '--slope_eps', str(slope_eps), '--min_k', str(min_k), '--k_ratio', str(k_ratio)]
+           '--max_gap', str(max_gap), '--alpha', str(alpha), '--gamma', str(gamma), '--bonus', str(bonus), '--slope_eps', str(slope_eps), '--min_k', str(min_k), '--k_ratio', str(k_ratio), '--ex_max_edit_ratio', str(ex_max_edit_ratio)]
     subprocess.run(cmd, check=True)
     query, ref = read_input_txt('input2.txt')
     score = score_output('output2.txt', ref, query)
-    print(f"Params: max_gap={max_gap}, alpha={alpha}, gamma={gamma}, bonus={bonus}, slope_eps={slope_eps}, min_k={min_k}, k_ratio={k_ratio}, Score={score}")
+    print(f"Params: max_gap={max_gap}, alpha={alpha}, gamma={gamma}, bonus={bonus}, slope_eps={slope_eps}, min_k={min_k}, k_ratio={k_ratio}, ex_max_edit_ratio={ex_max_edit_ratio}, Score={score}")
     return score
 
 def main():
@@ -136,6 +138,7 @@ def main():
         'slope_eps': get_range('slope_eps'),
         'min_k': get_range('min_k'),
         'k_ratio': get_range('k_ratio'),
+        'ex_max_edit_ratio': get_range('ex_max_edit_ratio'),
     }
     print(f"[Optuna] 第一阶段最优参数区间: {param_space}")
     print(f"[Optuna] 第一阶段最优分数: {study1.best_value}")
