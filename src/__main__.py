@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--alpha', type=float, default=50, help='query gap惩罚系数')
     parser.add_argument('--gamma', type=float, default=4, help='斜率惩罚系数')
     parser.add_argument('--bonus', type=float, default=16, help='顺滑延申奖励')
+    parser.add_argument('--slope_eps', type=float, default=0.3, help='主链合并斜率偏差阈值')
     args = parser.parse_args()
 
     print("algorithm start")
@@ -33,7 +34,7 @@ def main():
         query = input().strip()
         print('请输入reference序列:')
         ref = input().strip()
-    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus)
+    result = match(query, ref, max_gap=args.max_gap, alpha=args.alpha, gamma=args.gamma, bonus=args.bonus, slope_eps=args.slope_eps)
     final_ans = result['final_ans']
     anchors = result['anchors']
     if args.output:

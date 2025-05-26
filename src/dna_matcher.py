@@ -117,10 +117,9 @@ def dp(anchors: List[Anchor], alpha=1, gamma=0.1, bonus=10, max_gap=40) -> List[
         idx = prev[idx]
     return chain[::-1]
 
-def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16):
+def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, slope_eps=0.3):
     anchors_obj = build_anchors(query, ref, max_gap=max_gap)
     chain = dp(anchors_obj, alpha=alpha, gamma=gamma, bonus=bonus, max_gap=max_gap)
-    # 合并gap很小且方向一致的主链锚点
     merged_intervals = []
     for a in chain:
         q0 = a.q_start
@@ -133,26 +132,34 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16):
         else:
             last = merged_intervals[-1]
             if strand == last[4]:
+                # 正向
                 if strand == 1:
                     gap_q = q0 - (last[1] + 1)
                     gap_r = r0 - (last[3] + 1)
+                    delta_q = q1 - last[0]
+                    delta_r = r1 - last[2]
+                    slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
+                    slope_ok = abs(slope - 1) <= slope_eps
+                    if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
+                        # 合并
+                        merged_intervals[-1] = [last[0], q1, last[2], r1, strand]
+                        continue
+                # 反向
                 else:
                     gap_q = q0 - (last[1] + 1)
-                    gap_r = last[2] - (r1)
-                if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap:
-                    # 合并区间
-                    last[1] = q1
-                    if strand == 1:
-                        last[3] = r1
-                    else:
-                        last[2] = r0
-                    continue
+                    gap_r = last[2] - (r1 + 1)
+                    # 合并后区间应为 (last[0], q1, r0, last[3])
+                    delta_q = q1 - last[0]
+                    delta_r = last[3] - r0
+                    slope = abs(delta_q / (delta_r + 1e-6)) if delta_r != 0 else 0
+                    slope_ok = abs(slope - 1) <= slope_eps
+                    if 0 <= gap_q <= max_gap and 0 <= gap_r <= max_gap and slope_ok:
+                        merged_intervals[-1] = [last[0], q1, r0, last[3], strand]
+                        continue
             merged_intervals.append([q0, q1, r0, r1, strand])
-    # 输出时去掉strand
     final_ans = [(q0, q1, r0, r1, strand) for q0, q1, r0, r1, strand in merged_intervals]
     final_ans = list(set(final_ans))
     final_ans.sort(key=lambda x: min(x[0], x[1]))
-    # anchors输出所有锚点，带strand
     anchors_out = []
     for a in anchors_obj:
         q0 = a.q_start
