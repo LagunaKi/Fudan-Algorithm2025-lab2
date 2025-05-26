@@ -93,18 +93,18 @@ def score_output(output_file, ref, query):
 
 def objective(trial):
     max_gap = trial.suggest_int('max_gap', 10, 120)
-    bonus = trial.suggest_float('bonus', 10, 60)
-    alpha = trial.suggest_float('alpha', 10.0, 200.0)
-    gamma = trial.suggest_float('gamma', 1, 15)
-    cmd = f"python -m src --input input2.txt --output output2.txt --max_gap {max_gap} --bonus {bonus} --alpha {alpha} --gamma {gamma}"
+    alpha = trial.suggest_float('alpha', 10, 120)
+    gamma = trial.suggest_float('gamma', 1, 18)
+    bonus = trial.suggest_float('bonus', 5, 50)
+    cmd = f"python -m src --input input2.txt --output output2.txt --max_gap {max_gap} --alpha {alpha} --gamma {gamma} --bonus {bonus}"
     subprocess.run(cmd, shell=True, check=True)
     query, ref = read_input_txt('input2.txt')
     score = score_output('output2.txt', ref, query)
-    print(f"Params: max_gap={max_gap}, bonus={bonus}, alpha={alpha}, gamma={gamma}, Score={score}")
+    print(f"Params: max_gap={max_gap}, alpha={alpha}, gamma={gamma}, bonus={bonus}, Score={score}")
     return -score  # optuna默认最小化，这里取负
 
 if __name__ == '__main__':
     study = optuna.create_study()
-    study.optimize(objective, n_trials=80)
+    study.optimize(objective, n_trials=180)
     print('Best params:', study.best_params)
     print('Best score:', -study.best_value) 
