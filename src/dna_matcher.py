@@ -212,8 +212,8 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
             if strand == last[4]:
                 # 正向
                 if strand == 1:
-                    gap_q = q0 - (last[1] + 1)
-                    gap_r = r0 - (last[3] + 1)
+                    gap_q = q0 - last[1]
+                    gap_r = r0 - last[3]
                     delta_q = q1 - last[0]
                     delta_r = r1 - last[2]
                     slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
@@ -223,9 +223,8 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                         continue
                 # 反向
                 else:
-                    gap_q = q0 - (last[1] + 1)
-                    gap_r = last[2] - (r1 + 1)
-                    # 合并后区间应为 (last[0], q1, r0, last[3])
+                    gap_q = q0 - last[1]
+                    gap_r = last[2] - r1
                     delta_q = q1 - last[0]
                     delta_r = last[3] - r0
                     slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
@@ -250,7 +249,7 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                 nq0 = q0 - 1
                 nr0 = r0
                 nr1 = r1 + 1
-            if nq0 <= prev_q1 or nq0 < 0:
+            if nq0 < prev_q1 or nq0 < 0:
                 break
             if strand == 1:
                 if nr0 < 0:
@@ -282,10 +281,10 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                 nq1 = q1 + 1
                 nr0 = r0 - 1
                 nr1 = r1
-            if nq1 >= len(query) or nq1 <= q1:
+            if nq1 >= len(query) or nq1 < q1:
                 break
             # 不能与下一区间重叠
-            if idx + 1 < len(merged_intervals) and nq1 >= merged_intervals[idx + 1][0]:
+            if idx + 1 < len(merged_intervals) and nq1 > merged_intervals[idx + 1][0]:
                 break
             if strand == 1:
                 if nr1 >= len(ref):
@@ -320,8 +319,8 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
             last = merged2[-1]
             if strand == last[4]:
                 if strand == 1:
-                    gap_q = q0 - (last[1] + 1)
-                    gap_r = r0 - (last[3] + 1)
+                    gap_q = q0 - last[1]
+                    gap_r = r0 - last[3]
                     delta_q = q1 - last[0]
                     delta_r = r1 - last[2]
                     slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
@@ -330,8 +329,8 @@ def match(query: str, ref: str, max_gap: int = 50, alpha=43, gamma=6, bonus=16, 
                         merged2[-1] = [last[0], q1, last[2], r1, strand]
                         continue
                 else:
-                    gap_q = q0 - (last[1] + 1)
-                    gap_r = last[2] - (r1 + 1)
+                    gap_q = q0 - last[1]
+                    gap_r = last[2] - r1
                     delta_q = q1 - last[0]
                     delta_r = last[3] - r0
                     slope = delta_q / (delta_r + 1e-6) if delta_r != 0 else 0
