@@ -33,33 +33,11 @@ def kmer_minhash(s, num_hash=5):
         hashes.append(h)
     return tuple(hashes)
 
-def smart_k_list(query, ref, min_k=3, k_ratio=2/3, min_anchors=10):
+def build_k_list(query, ref, min_k=3, k_ratio=2/3):
     k_list = []
     k_val = int(len(ref) * 0.9)
-    prev_k = None
     while k_val >= min_k:
-        # 统计该k下的锚点数（正向+反向）
-        ref_minhash = collections.defaultdict(list)
-        for i in range(len(ref) - k_val + 1):
-            kmer = ref[i:i+k_val]
-            sig = kmer_minhash(kmer)
-            ref_minhash[sig].append(i)
-        anchor_count = 0
-        for j in range(len(query) - k_val + 1):
-            q_kmer = query[j:j+k_val]
-            sig = kmer_minhash(q_kmer)
-            anchor_count += len(ref_minhash.get(sig, []))
-        rc_query = reverse_complement(query)
-        for j in range(len(rc_query) - k_val + 1):
-            q_kmer = rc_query[j:j+k_val]
-            sig = kmer_minhash(q_kmer)
-            anchor_count += len(ref_minhash.get(sig, []))
-        if prev_k is not None and anchor_count < min_anchors and k_val > min_k:
-            k_mid = int((k_val + prev_k) / 2)
-            if k_mid not in k_list and k_mid >= min_k:
-                k_list.append(k_mid)
         k_list.append(k_val)
-        prev_k = k_val
         k_val = int(k_val * k_ratio)
     k_list = sorted(set(k_list), reverse=True)
     return k_list
@@ -81,11 +59,11 @@ def extend_anchor_numba(query_arr, ref_arr, q_start, r_start, length, q_len, r_l
         r += 1
     return q_start - l, r_start - l, length + l + r
 
-def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3, min_anchors=10) -> List[Anchor]:
+def build_anchors(query: str, ref: str, max_gap=20, min_k=3, k_ratio=2/3) -> List[Anchor]:
     m = len(query)
     anchors = []
     covered = [False] * m
-    k_list = smart_k_list(query, ref, min_k=min_k, k_ratio=k_ratio, min_anchors=min_anchors)
+    k_list = build_k_list(query, ref, min_k=min_k, k_ratio=k_ratio)
     long_anchors = []  # 存储长anchor区间 (q0, q1, r0, r1, strand)
     for idx, k in enumerate(k_list):
         ref_minhash = collections.defaultdict(list)
